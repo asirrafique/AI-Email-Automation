@@ -38,7 +38,7 @@ flowchart TD
     H --> I[Mark Processed]
 
     I --> J[SQLite Processing Store]
-````
+```
 
 ---
 
@@ -364,7 +364,7 @@ backend/processed_emails.db
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+git clone https://github.com/asirrafique/AI-Email-Automation.git
 cd "AI Email Automation/backend"
 ```
 
