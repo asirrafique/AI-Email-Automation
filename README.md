@@ -661,6 +661,3 @@ Potential production improvements include:
 **Asir Rafique**
 
 Full-stack developer focused on AI application development, automation, and modern web technologies.
-
-```
-```
