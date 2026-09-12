@@ -1,333 +1,209 @@
-# AI Email Automation
+ AI Email Automation
 
-An AI-powered email automation backend that connects Gmail with Google's Gemini API to identify potential sales leads and generate professional email responses.
+An AI-powered Gmail automation backend built with **FastAPI**, **Google Gmail API**, and **Google Gemini**.
 
-This project was built as an internship assessment to demonstrate Gmail API integration, LLM-based email classification, AI-assisted reply generation, safe automation, and human-in-the-loop workflows.
+The application reads unread Gmail messages, classifies them for genuine sales intent, generates professional replies for qualified leads, creates Gmail drafts through the manual workflow, and can send replies automatically through the background worker when automatic sending is enabled.
 
-The system intentionally creates a **Gmail draft** instead of automatically sending an AI-generated email, allowing a human to review and approve the response before sending.
+> **Safety note:** Direct sending is supported by this version. Keep `AUTO_REPLY_TEST_MODE=true` while testing. Set it to `false` only after reviewing the behavior carefully.
 
 ---
 
-## Overview
+## Features
 
-The application automates the initial handling of incoming business emails:
+- Google OAuth 2.0 authentication for Gmail
+- Gmail profile and unread-email retrieval
+- Plain-text email-body extraction from Gmail message payloads
+- Gemini-based sales-lead classification
+- Structured Gemini output validated with Pydantic
+- AI-generated, personalized sales replies
+- Gmail draft creation
+- Optional direct email sending
+- Manual sending of an existing Gmail draft after human approval
+- Background worker that periodically checks for unread emails
+- Configurable polling interval
+- Sender safety filters:
+  - Skips the configured Gmail account's own messages
+  - Skips common automated, notification, newsletter, and bounce senders
+- Minimum AI-confidence threshold for automatic replies
+- SQLite-based processed-message tracking
+- Duplicate-processing protection
+- Prompt-injection-aware LLM instructions
+- Email-body length limiting before sending content to Gemini
+- Automated unit tests using mocks
+- Separate manual integration tests for Gemini and prompt-injection behavior
 
-1. Authenticate with Gmail using OAuth 2.0.
-2. Fetch unread emails.
-3. Send email content to Gemini for classification.
-4. Determine whether the email represents a potential sales lead.
-5. Generate a personalized response for sales leads.
-6. Create the response as an unsent Gmail draft.
-7. Mark the email as processed to prevent duplicate processing.
+---
 
-### Workflow
+
+## System Architecture
+
+The application uses FastAPI as the backend, Gmail API for email operations, and Google Gemini for email classification and reply generation.
 
 ```mermaid
 flowchart TD
-    A[Gmail] --> B[FastAPI Backend]
-    B --> C[Fetch Unread Email]
-    C --> D[Gemini Classification]
+    A[User opens FastAPI application] --> B[Google Gmail OAuth]
+    B --> C[Gmail API Authentication]
+    C --> D[Fetch unread emails]
 
-    D -->|Not a Sales Lead| E[Ignore Email]
-    D -->|Sales Lead| F[Generate Reply]
+    D --> E[Email Classifier Service]
+    E --> F[Extract sender, subject, body]
+    F --> G[Gemini AI]
 
-    F --> G[Create Gmail Draft]
-    G --> H[Human Review]
+    G --> H{Is it a sales lead?}
 
-    E --> I[Mark Processed]
-    H --> I[Mark Processed]
+    H -->|No| I[Skip email]
+    H -->|Yes| J{Confidence meets threshold?}
 
-    I --> J[SQLite Processing Store]
+    J -->|No| K[Do not process]
+    J -->|Yes| L[Generate professional reply]
+
+    L --> M{Choose workflow}
+
+    M -->|Manual workflow| N[Create Gmail draft]
+    M -->|Automatic workflow| O{AUTO_REPLY_TEST_MODE enabled?}
+
+    O -->|Yes| P[Test mode: do not send]
+    O -->|No| Q[Send reply through Gmail API]
+
+    N --> R[Manual review and approval]
+    R --> S[Send draft through Gmail API]
+
+    Q --> T[Store message ID in SQLite]
+    S --> T
 ```
 
+
+## Background Worker Architecture
+
+When `AUTO_REPLY_ENABLED=true`, the application starts a background worker during FastAPI startup. The worker periodically checks Gmail for unread emails and processes eligible messages automatically.
+
+```mermaid
+flowchart TD
+    A[FastAPI application starts] --> B[Start email_worker]
+    B --> C[Wait for configured interval]
+    C --> D[Fetch unread Gmail email]
+    D --> E[Check sender and processed status]
+
+    E --> F{Already processed or invalid sender?}
+    F -->|Yes| G[Skip email]
+    G --> C
+
+    F -->|No| H[Classify email using Gemini]
+    H --> I{Is it a sales lead?}
+
+    I -->|No| J[Skip email]
+    J --> C
+
+    I -->|Yes| K{Confidence meets threshold?}
+
+    K -->|No| L[Skip email]
+    L --> C
+
+    K -->|Yes| M[Generate professional reply]
+    M --> N{AUTO_REPLY_TEST_MODE}
+
+    N -->|true| O[Test mode: do not send]
+    N -->|false| P[Send reply automatically]
+
+    O --> Q[Continue polling]
+    P --> R[Store message ID in SQLite]
+
+    R --> C
+    Q --> C
+```
+
+### Worker Configuration
+
+The background worker is controlled using the following environment variables:
+
+| Variable | Description |
+|---|---|
+| `AUTO_REPLY_ENABLED` | Enables or disables the background worker |
+| `AUTO_REPLY_TEST_MODE` | When `true`, prevents the worker from sending real emails |
+| `AUTO_REPLY_INTERVAL_SECONDS` | Time between worker polling cycles |
+| `AUTO_REPLY_MIN_CONFIDENCE` | Minimum confidence required to process a sales lead |
+| `GMAIL_USER_EMAIL` | Gmail account used for processing |
+
+
+### Worker Lifecycle
+
+1. FastAPI starts and launches `email_worker()`.
+2. The worker waits for the configured polling interval.
+3. It retrieves unread Gmail messages.
+4. It skips already processed messages and invalid senders.
+5. Gemini classifies the email.
+6. Non-sales emails are ignored.
+7. Emails below the configured confidence threshold are ignored.
+8. Gemini generates a professional reply for qualifying sales leads.
+9. In test mode, the worker does not send the generated reply.
+10. In live mode, the worker sends the reply through the Gmail API.
+11. The processed message ID is stored in SQLite after successful sending.
+12. The worker repeats the process until the application shuts down.
+
+> **Safety recommendation:** Keep `AUTO_REPLY_TEST_MODE=true` while testing. Set it to `false` only when you intentionally want the application to send real emails.
 ---
 
-## Key Features
+## How It Works
 
-* Gmail OAuth 2.0 authentication
-* Gmail API integration
-* Unread email retrieval
-* AI-powered sales lead classification
-* Structured Gemini responses using Pydantic schemas
-* AI-generated personalized sales replies
-* Gmail draft creation
-* Human-in-the-loop review before sending
-* Duplicate-processing protection using SQLite
-* Prompt-injection-aware AI instructions
-* Email input length limiting
-* Safe API error responses
-* Automated unit tests using mocks
-* No automatic email sending
+### Automatic worker flow
 
----
+When `AUTO_REPLY_ENABLED=true`, the FastAPI lifespan starts a background worker.
 
-## Technology Stack
+The worker:
 
-### Backend
+1. Checks Gmail for unread messages.
+2. Processes at most one unread message per cycle.
+3. Skips messages already stored in the SQLite processing database.
+4. Skips messages sent from the configured Gmail account.
+5. Skips common automated or unwanted senders.
+6. Classifies the email with Gemini.
+7. Ignores non-sales emails.
+8. Checks the configured confidence threshold.
+9. Generates a reply for qualifying sales leads.
+10. If `AUTO_REPLY_TEST_MODE=true`, the worker does not send the generated reply.
+11. If `AUTO_REPLY_TEST_MODE=false`, the worker sends the reply directly through Gmail.
+12. The message is marked as processed only after successful direct sending.
 
-* Python
-* FastAPI
-* Uvicorn
+### Manual draft flow
 
-### AI
+The manual draft endpoint follows a safer human-review workflow:
 
-* Google Gemini API
-* `google-genai`
-* Structured JSON responses
-* Pydantic validation
+1. Fetch the latest unread email.
+2. Check whether it was already processed.
+3. Classify the email with Gemini.
+4. Ignore the email if it is not a sales lead.
+5. Generate a professional reply.
+6. Create an unsent Gmail draft.
+7. Mark the email as processed.
 
-### Email
-
-* Gmail API
-* Google OAuth 2.0
-
-### Storage
-
-* SQLite
-
-SQLite is used to store Gmail message IDs that have already been processed.
-
-### Testing
-
-* Pytest
-* `unittest.mock`
+The generated draft can later be sent explicitly through the `/gmail/send-draft` endpoint.
 
 ---
 
 ## Architecture
 
 ```text
-                    ┌──────────────────────┐
-                    │        Gmail         │
-                    │   Incoming Emails    │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │    FastAPI Backend   │
-                    │                      │
-                    │  Gmail Integration   │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  Gemini Classifier   │
-                    │                      │
-                    │    Sales Lead?       │
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────┴──────────┐
-                    │                     │
-                   No                    Yes
-                    │                     │
-                    ▼                     ▼
-             ┌─────────────┐     ┌─────────────────┐
-             │    Ignore   │     │ Generate Reply  │
-             └──────┬──────┘     └────────┬────────┘
-                    │                     │
-                    │                     ▼
-                    │            ┌─────────────────┐
-                    │            │  Gmail Draft    │
-                    │            └────────┬────────┘
-                    │                     │
-                    │                     ▼
-                    │            ┌─────────────────┐
-                    │            │ Human Review    │
-                    │            └────────┬────────┘
-                    │                     │
-                    └──────────┬──────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │ SQLite Processed     │
-                    │ Email Store          │
-                    └──────────────────────┘
-```
-
----
-
-## AI Classification
-
-Gemini analyzes each unread email and returns a structured classification.
-
-The classification contains:
-
-* `is_sales_lead`
-* `confidence`
-* `lead_name`
-* `company`
-* `intent`
-* `requirements`
-* `reason`
-
-### Example
-
-```json
-{
-  "is_sales_lead": true,
-  "confidence": 0.95,
-  "lead_name": "John Smith",
-  "company": "Acme Inc",
-  "intent": "Looking for AI development services",
-  "requirements": "AI customer support platform",
-  "reason": "The sender is asking about professional development services."
-}
-```
-
-The application uses Pydantic models to validate the structured Gemini response before it is used by the application.
-
----
-
-## AI Reply Generation
-
-For confirmed sales leads, Gemini generates a professional reply based on:
-
-* Sender name
-* Sender email
-* Subject
-* Original email
-* Lead classification
-* Requirements identified by the classifier
-
-The generated reply is designed to:
-
-* Acknowledge the customer's request
-* Mention relevant requirements
-* Encourage further discussion
-* Suggest an appropriate next step
-* Avoid inventing pricing or commitments
-* Maintain professional business language
-
-Generated replies end with:
-
-```text
-Best regards,
-Asir Rafique
-```
-
----
-
-## Human-in-the-Loop Safety
-
-The application intentionally does **not** automatically send emails.
-
-Instead, the workflow is:
-
-```text
-Sales Lead
-    ↓
-AI generates reply
-    ↓
-Gmail Draft
-    ↓
-Human reviews
-    ↓
-Human decides whether to send
-```
-
-This gives the user an opportunity to:
-
-* Review the generated response
-* Correct information
-* Change the tone
-* Add missing details
-* Decide whether the response should be sent
-
-This prevents an AI-generated response from being sent without human approval.
-
----
-
-## Prompt Injection Protection
-
-Email content is treated as **untrusted data**.
-
-The Gemini prompts explicitly instruct the model to:
-
-* Never follow instructions contained inside an email.
-* Ignore attempts to change the system's instructions.
-* Never execute code or commands found inside email content.
-* Never reveal API keys or internal configuration.
-* Analyze the email only for sales intent.
-* Avoid making unsupported business commitments.
-
-The project also includes a dedicated prompt-injection integration test:
-
-```text
-manual_prompt_injection_test.py
-```
-
-This is a live Gemini integration test and is intentionally kept outside the automated pytest suite.
-
----
-
-## Duplicate Processing Protection
-
-The application uses SQLite to prevent the same Gmail message from being processed repeatedly.
-
-Each processed Gmail message ID is stored in:
-
-```text
-processed_emails.db
-```
-
-Before processing an email:
-
-```text
-Is message already processed?
-        │
-   ┌────┴────┐
-   │         │
-  Yes        No
-   │         │
-   ▼         ▼
- Skip      Process
-```
-
-This prevents repeated AI calls and duplicate draft creation for the same Gmail message.
-
----
-
-## API Endpoints
-
-| Method | Endpoint              | Description                                                         |
-| ------ | --------------------- | ------------------------------------------------------------------- |
-| GET    | `/`                   | Health/status endpoint                                              |
-| GET    | `/auth/login`         | Start Gmail OAuth                                                   |
-| GET    | `/auth/callback`      | Handle Google OAuth callback                                        |
-| GET    | `/gmail/profile`      | Check Gmail authentication                                          |
-| GET    | `/gmail/emails`       | Fetch metadata for unread emails                                    |
-| GET    | `/ai/classify-latest` | Classify the latest unread email                                    |
-| POST   | `/ai/process-latest`  | Process the latest unread email and create a draft when appropriate |
-
-### Interactive API Documentation
-
-When the backend is running, FastAPI provides interactive Swagger documentation at:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
----
-
-## Project Structure
-
-```text
 AI Email Automation/
 │
 ├── backend/
-│   │
 │   ├── app/
 │   │   ├── gmail/
+│   │   │   ├── __init__.py
 │   │   │   ├── auth.py
 │   │   │   └── service.py
 │   │   │
 │   │   ├── llm/
+│   │   │   ├── __init__.py
 │   │   │   ├── gemini.py
 │   │   │   └── schemas.py
 │   │   │
 │   │   ├── services/
+│   │   │   ├── __init__.py
 │   │   │   ├── email_classifier.py
+│   │   │   ├── email_worker.py
 │   │   │   └── processed_store.py
 │   │   │
+│   │   ├── __init__.py
 │   │   └── main.py
 │   │
 │   ├── tests/
@@ -338,110 +214,168 @@ AI Email Automation/
 │   ├── manual_gemini_test.py
 │   ├── manual_reply_test.py
 │   ├── manual_prompt_injection_test.py
-│   ├── pytest.ini
 │   ├── requirements.txt
-│   └── .env.example
+│   ├── .env.example
+│   ├── credentials.json       # local secret; do not commit
+│   ├── token.json             # generated locally; do not commit
+│   └── processed_emails.db   # generated locally; do not commit
 │
+├── pytest.ini
 ├── .gitignore
 └── README.md
 ```
 
-### Local-only files
+---
 
-The following files are intentionally local and should **never be committed to version control**:
+## Main Components
+
+### `app/main.py`
+
+Creates the FastAPI application and exposes the HTTP API.
+
+Responsibilities:
+
+- Loads environment configuration
+- Configures session middleware
+- Defines Gmail authentication routes
+- Defines Gmail inspection routes
+- Defines AI classification and processing routes
+- Starts and stops the background email worker through FastAPI lifespan events
+- Converts unexpected service errors into HTTP error responses
+
+### `app/gmail/auth.py`
+
+Handles Google OAuth credentials.
+
+Responsibilities:
+
+- Defines Gmail OAuth scopes
+- Creates the Google OAuth flow
+- Stores OAuth state and PKCE code-verifier data in the session
+- Loads saved Gmail credentials
+- Refreshes expired credentials when possible
+- Stores the resulting token locally in `token.json`
+
+### `app/gmail/service.py`
+
+Provides Gmail API operations.
+
+Responsibilities:
+
+- Builds an authenticated Gmail API client
+- Retrieves the Gmail profile
+- Lists unread messages
+- Fetches complete Gmail message payloads
+- Extracts headers and plain-text bodies
+- Creates Gmail drafts
+- Sends an existing Gmail draft
+- Sends a message directly through Gmail
+
+### `app/llm/gemini.py`
+
+Provides Gemini integration.
+
+Responsibilities:
+
+- Loads the project `.env` file
+- Creates the Gemini client
+- Classifies email content
+- Generates sales replies
+- Limits email-body input to 12,000 characters
+- Requests structured JSON responses
+- Validates Gemini responses against Pydantic schemas
+
+The configured model is:
 
 ```text
-backend/.env
-backend/credentials.json
-backend/token.json
-backend/processed_emails.db
+gemini-3.6-flash
 ```
+
+### `app/llm/schemas.py`
+
+Defines structured data models:
+
+- `LeadClassification`
+- `GeneratedReply`
+- `SendDraftRequest`
+
+`LeadClassification` contains:
+
+- `is_sales_lead`
+- `confidence`
+- `lead_name`
+- `company`
+- `intent`
+- `requirements`
+- `reason`
+
+`GeneratedReply` contains:
+
+- `subject`
+- `body`
+
+### `app/services/email_classifier.py`
+
+Contains the main business logic.
+
+Responsibilities:
+
+- Safely formats email metadata for API responses
+- Builds reply subjects
+- Generates replies for classified leads
+- Creates reply drafts
+- Detects automated senders
+- Detects messages sent from the configured Gmail account
+- Reads and validates the confidence threshold
+- Classifies the latest unread email
+- Runs the manual draft workflow
+- Runs the automatic direct-reply workflow
+
+### `app/services/email_worker.py`
+
+Runs the periodic automatic-processing loop.
+
+Responsibilities:
+
+- Reads `AUTO_REPLY_ENABLED`
+- Reads `AUTO_REPLY_INTERVAL_SECONDS`
+- Enforces a minimum polling interval of 30 seconds
+- Processes one unread email per cycle
+- Runs the synchronous Gmail/AI workflow in a worker thread
+- Logs processing errors without terminating the loop
+
+### `app/services/processed_store.py`
+
+Provides SQLite persistence for processed Gmail message IDs.
+
+The database contains:
+
+```sql
+CREATE TABLE IF NOT EXISTS processed_emails (
+    message_id TEXT PRIMARY KEY
+);
+```
+
+`INSERT OR IGNORE` prevents duplicate message IDs from being inserted.
 
 ---
 
-## Setup
+## API Endpoints
 
-### 1. Clone the repository
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/` | API health/status response |
+| `GET` | `/auth/login` | Start Google OAuth authentication |
+| `GET` | `/auth/callback` | Handle the Google OAuth callback |
+| `GET` | `/gmail/profile` | Check Gmail authentication and profile information |
+| `GET` | `/gmail/emails` | Return metadata for up to five unread emails |
+| `GET` | `/ai/classify-latest` | Classify the latest unread email with Gemini |
+| `POST` | `/ai/process-latest` | Create a Gmail draft for the latest unread sales lead |
+| `POST` | `/gmail/send-draft` | Send an existing Gmail draft after approval |
+| `POST` | `/ai/process-latest-and-send` | Automatically classify and directly send a reply when allowed |
+| `GET` | `/docs` | FastAPI Swagger documentation |
 
-```bash
-git clone https://github.com/asirrafique/AI-Email-Automation.git
-cd "AI Email Automation/backend"
-```
-
-### 2. Create a virtual environment
-
-```bash
-python -m venv .venv
-```
-
-### Activate it on Windows
-
-PowerShell:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-### 3. Install dependencies
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-Create a `.env` file inside `backend/`:
-
-```env
-GEMINI_API_KEY=your_gemini_api_key
-SESSION_SECRET_KEY=your_random_session_secret
-```
-
-Do not commit this file.
-
-A `.env.example` file is included as a template.
-
----
-
-## Google OAuth Configuration
-
-### 5. Create a Google Cloud project
-
-Create a Google Cloud project and enable the Gmail API.
-
-Create an OAuth 2.0 client with:
-
-```text
-Application type: Web application
-```
-
-Configure the redirect URI:
-
-```text
-http://localhost:8000/auth/callback
-```
-
-Download the OAuth client credentials and save them as:
-
-```text
-backend/credentials.json
-```
-
-The Gmail account used for testing must be authorized as an OAuth test user when using an external testing application.
-
----
-
-## Start the Backend
-
-### 6. Run the application
-
-From the `backend` directory:
-
-```bash
-python -m uvicorn app.main:app --reload
-```
-
-The API will be available at:
+The API runs by default at:
 
 ```text
 http://127.0.0.1:8000
@@ -455,208 +389,310 @@ http://127.0.0.1:8000/docs
 
 ---
 
-## Authenticate Gmail
+## Environment Variables
 
-### 7. Complete OAuth authentication
+The project loads the main `.env` file from the project root.
 
-Open:
+Example configuration:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key
+SESSION_SECRET_KEY=your_random_session_secret
+
+AUTO_REPLY_ENABLED=true
+AUTO_REPLY_TEST_MODE=false
+AUTO_REPLY_INTERVAL_SECONDS=60
+AUTO_REPLY_MIN_CONFIDENCE=0.85
+
+GMAIL_USER_EMAIL=asirrafique@gmail.com
+```
+
+### Configuration reference
+
+| Variable | Description |
+|---|---|
+| `GEMINI_API_KEY` | API key used to access Google Gemini |
+| `SESSION_SECRET_KEY` | Secret used by FastAPI session middleware |
+| `AUTO_REPLY_ENABLED` | Enables the background automatic email worker |
+| `AUTO_REPLY_TEST_MODE` | If `true`, generates a reply but does not send it |
+| `AUTO_REPLY_INTERVAL_SECONDS` | Worker polling interval; values below 30 seconds are raised to 30 |
+| `AUTO_REPLY_MIN_CONFIDENCE` | Minimum Gemini confidence required for automatic replies |
+| `GMAIL_USER_EMAIL` | Gmail address used to avoid replying to the account's own messages |
+
+### Recommended testing configuration
+
+Use this configuration while testing:
+
+```env
+AUTO_REPLY_ENABLED=true
+AUTO_REPLY_TEST_MODE=true
+AUTO_REPLY_INTERVAL_SECONDS=60
+AUTO_REPLY_MIN_CONFIDENCE=0.85
+```
+
+With test mode enabled, the worker can classify and generate replies without sending them.
+
+> Never publish real API keys, OAuth credentials, tokens, or session secrets in GitHub.
+
+---
+
+## Google OAuth Setup
+
+1. Create a Google Cloud project.
+2. Enable the Gmail API.
+3. Configure the OAuth consent screen.
+4. Create an OAuth 2.0 client for a web application.
+5. Add this authorized redirect URI:
+
+```text
+http://localhost:8000/auth/callback
+```
+
+6. Download the OAuth client JSON file.
+7. Save it as:
+
+```text
+backend/credentials.json
+```
+
+8. If the OAuth application is in testing mode, add the Gmail account as an authorized test user.
+
+---
+
+## Installation
+
+From the project root:
+
+```bash
+cd "AI Email Automation"
+```
+
+Create a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+Activate it on Windows PowerShell:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
+python -m pip install -r backend/requirements.txt
+```
+
+---
+
+## Running the Application
+
+From the project root, run:
+
+```bash
+python -m uvicorn app.main:app --app-dir backend --reload
+```
+
+Alternatively, from the `backend/` directory:
+
+```bash
+cd backend
+python -m uvicorn app.main:app --reload
+```
+
+Then open:
 
 ```text
 http://127.0.0.1:8000/auth/login
 ```
 
-Complete the Google OAuth flow.
-
-After successful authentication, the application stores the authorization token locally in:
-
-```text
-backend/token.json
-```
-
-The token is excluded from version control.
+Complete the Google OAuth flow before using Gmail-related endpoints.
 
 ---
 
-# Testing
+## Example Usage
 
-The project contains automated tests that do not require live Gmail or Gemini API calls.
+### Check API status
 
-Run:
+```http
+GET /
+```
+
+### Check Gmail profile
+
+```http
+GET /gmail/profile
+```
+
+### View unread email metadata
+
+```http
+GET /gmail/emails
+```
+
+### Classify the latest unread email
+
+```http
+GET /ai/classify-latest
+```
+
+### Create a draft for the latest unread sales lead
+
+```http
+POST /ai/process-latest
+```
+
+### Send an existing draft after human approval
+
+```http
+POST /gmail/send-draft
+Content-Type: application/json
+
+{
+  "draft_id": "your_gmail_draft_id"
+}
+```
+
+### Run the direct automatic workflow manually
+
+```http
+POST /ai/process-latest-and-send
+```
+
+This endpoint may send an email when:
+
+- The message is unread and not already processed
+- The sender is not the configured Gmail account
+- The sender is not detected as automated
+- Gemini classifies the message as a sales lead
+- The confidence meets `AUTO_REPLY_MIN_CONFIDENCE`
+- `AUTO_REPLY_TEST_MODE=false`
+
+---
+
+## Reply Safety Behavior
+
+The automatic workflow includes several protections:
+
+- Processes only one unread email per worker cycle
+- Skips previously processed messages
+- Does not reply to the configured Gmail account itself
+- Skips common automated sender addresses
+- Requires a sales-lead classification
+- Requires the configured minimum confidence
+- Supports a test mode that prevents sending
+- Marks a message as processed only after successful direct sending
+
+The Gemini prompts also instruct the model to:
+
+- Treat email content as untrusted data
+- Ignore instructions embedded inside emails
+- Avoid executing links, code, or commands from email content
+- Avoid inventing pricing, guarantees, timelines, discounts, or commitments
+- Avoid claiming that a meeting was scheduled
+- Avoid claiming that a request was reviewed or approved
+- Produce a concise professional response
+- End generated replies with the configured professional signature
+
+---
+
+## Testing
+
+Run the automated test suite from the project root:
 
 ```bash
 python -m pytest -v
 ```
 
-### Current Result
+The test path is configured in `pytest.ini`:
 
-```text
-9 passed
+```ini
+[pytest]
+testpaths = backend/tests
+pythonpath = backend
 ```
 
-### Automated tests cover
+The automated tests cover:
 
-* Schema validation
-* Sales lead schema
-* Non-sales schema
-* Generated reply schema
-* Email processing logic
-* Sales lead creates a draft
-* Non-sales email is ignored
-* Already processed email is skipped
-* SQLite processing store
-* New messages are not initially processed
-* Messages can be marked as processed
-* Duplicate message IDs are not inserted twice
+- Sales-lead classification behavior
+- Non-sales email handling
+- Already-processed email handling
+- Gmail draft creation flow
+- SQLite processing state
+- Duplicate message prevention
+- Pydantic classification schema
+- Pydantic generated-reply schema
 
----
+### Manual integration tests
 
-## Manual Integration Tests
-
-The project also contains manual tests for live Gemini integration:
+The project also contains:
 
 ```text
-manual_gemini_test.py
-manual_reply_test.py
-manual_prompt_injection_test.py
+backend/manual_gemini_test.py
+backend/manual_reply_test.py
+backend/manual_prompt_injection_test.py
 ```
 
-These tests make real Gemini API requests and are intentionally excluded from the automated pytest suite.
+These scripts are intended for live Gemini testing and may require:
 
-They can be run manually when Gemini API quota is available.
-
-These integration tests are separate from the deterministic unit tests because they depend on external services, network availability, and API quota.
+- A valid `GEMINI_API_KEY`
+- Available Gemini API quota
+- Appropriate local environment configuration
 
 ---
 
-# Security Considerations
+## Data and Local Files
 
-## Secrets
-
-Sensitive configuration is stored in environment variables:
+The following files are local runtime or credential files:
 
 ```text
-GEMINI_API_KEY
-SESSION_SECRET_KEY
+.env
+backend/credentials.json
+backend/token.json
+backend/processed_emails.db
 ```
 
-Google OAuth credentials and authorization tokens are also excluded from version control.
+They should not be committed to version control.
+
+The SQLite database is created automatically when the processing store is used.
 
 ---
 
-## OAuth
+## Current Limitations
 
-The application uses Google OAuth 2.0 and stores the OAuth state and PKCE code verifier in the server-side session during authentication.
-
----
-
-## Email Data
-
-Email bodies are used internally for AI classification and reply generation but are not exposed by the public email metadata endpoint.
-
----
-
-## AI Safety
-
-Email content is treated as untrusted input and the AI is instructed not to follow instructions contained inside emails.
-
-The generated response also avoids inventing:
-
-* Pricing
-* Guarantees
-* Discounts
-* Timelines
-* Technical capabilities
-* Business commitments
-
-unless the required information is already available in the provided context.
+- The worker checks unread messages by polling Gmail.
+- Only one unread message is processed per worker cycle.
+- The current selection is based on Gmail's unread-message query and returned ordering.
+- Email extraction prioritizes plain-text content.
+- Complex HTML-only messages may produce an empty or incomplete body.
+- SQLite is suitable for local or single-instance execution, not concurrent production workers.
+- Direct sending is intentionally configurable and should be tested carefully.
+- There is no production-grade job queue, retry queue, or distributed locking.
+- The project currently uses a local OAuth token file.
+- The application does not include a frontend dashboard.
 
 ---
 
-## Human Review
+## Future Improvements
 
-AI-generated responses are saved as Gmail drafts rather than automatically sent.
-
-The final decision to send an email remains with the human user.
-
----
-
-# Current Limitations
-
-This project is intentionally scoped as an **internship assessment MVP**.
-
-Current limitations include:
-
-* The backend processes the latest unread email rather than continuously monitoring the mailbox.
-* Email processing is currently initiated through the API.
-* The application currently creates drafts instead of automatically sending responses.
-* SQLite is intended for local/single-instance processing state.
-* HTML-only email body handling can be improved.
-* Gemini API availability and quota depend on the configured Google AI account/project.
-
-These limitations can be addressed in a production version with background workers, queue-based processing, persistent production storage, richer email parsing, monitoring, and deployment infrastructure.
+- Add a production database such as PostgreSQL
+- Add a task queue such as Celery or RQ
+- Add distributed locking for multiple workers
+- Add Gmail push notifications instead of polling
+- Add richer HTML and multipart email parsing
+- Add structured application audit logs
+- Add retry and dead-letter handling
+- Add authentication and authorization for API endpoints
+- Add a review dashboard for generated replies
+- Add monitoring and metrics
+- Add Docker and deployment configuration
+- Add end-to-end tests against a dedicated test Gmail account
 
 ---
 
-# Design Decisions
-
-## Why create drafts instead of sending emails?
-
-Automatic AI-generated email sending introduces unnecessary risk.
-
-Creating a draft gives the user an opportunity to:
-
-* Review the generated response
-* Correct information
-* Change the tone
-* Add missing details
-* Decide whether to send
-
-This provides a safer human-in-the-loop workflow.
-
----
-
-## Why use structured AI output?
-
-Structured responses make AI output easier to validate and consume programmatically than relying on free-form text parsing.
-
-Pydantic models are used to validate the structured response before the application uses it.
-
----
-
-## Why use SQLite?
-
-SQLite provides a simple persistent store for preventing duplicate processing without introducing unnecessary infrastructure for the assessment MVP.
-
----
-
-## Why use mocks in automated tests?
-
-External API calls make tests slower, more expensive, and dependent on network availability and API quotas.
-
-Mocking Gemini and Gmail behavior allows the core application logic to be tested deterministically.
-
----
-
-# Future Improvements
-
-Potential production improvements include:
-
-* Background Gmail polling or webhook-based processing
-* Batch processing of multiple emails
-* Production database such as PostgreSQL
-* Redis-backed queues
-* Retry and dead-letter handling
-* Improved HTML email parsing
-* Authentication for application endpoints
-* Structured application logging
-* Monitoring and metrics
-* Frontend dashboard
-* Docker deployment
-* Automated test and deployment CI/CD pipeline
-
----
-
-# Author
+## Author
 
 **Asir Rafique**
 

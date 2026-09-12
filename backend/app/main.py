@@ -1,29 +1,75 @@
+import asyncio
 import logging
 import os
-from pathlib import Path
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
+
+# Load .env before importing modules that read environment variables.
+load_dotenv()
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from .gmail.auth import get_google_flow, get_credentials
-from .gmail.service import get_profile, get_unread_emails
+from .gmail.auth import TOKEN_FILE, get_credentials, get_google_flow
+from .gmail.service import (
+    get_profile,
+    get_unread_emails,
+    send_gmail_draft,
+)
+from .llm.schemas import SendDraftRequest
 from .services.email_classifier import (
     classify_latest_unread_email,
     process_latest_unread_email,
+    process_latest_unread_email_and_send,
 )
+from .services.email_worker import email_worker
 
 
-load_dotenv()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+)
 
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Start the automatic Gmail worker when FastAPI starts.
+    Stop it when FastAPI shuts down.
+    """
+
+    worker_task = asyncio.create_task(email_worker())
+
+    logger.info("FastAPI application started.")
+
+    try:
+        yield
+
+    finally:
+        logger.info("Stopping automatic email worker...")
+
+        worker_task.cancel()
+
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+        logger.info("Automatic email worker stopped.")
+
+
 app = FastAPI(
     title="AI Email Automation",
-    description="AI-powered email classification and sales lead response automation.",
+    description=(
+        "AI-powered email classification and sales lead "
+        "response automation."
+    ),
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -39,13 +85,16 @@ if not session_secret:
 app.add_middleware(
     SessionMiddleware,
     secret_key=session_secret,
+    session_cookie="session",
+    same_site="lax",
+    https_only=False,
 )
 
 
 @app.get("/")
 def root():
     return {
-        "message": "AI Email Automation API is running"
+        "message": "AI Email Automation API is running",
     }
 
 
@@ -92,23 +141,19 @@ def auth_callback(request: Request, code: str, state: str):
     if not code_verifier:
         raise HTTPException(
             status_code=400,
-            detail="Missing OAuth code verifier. Please start authentication again.",
+            detail=(
+                "Missing OAuth code verifier. "
+                "Please start authentication again."
+            ),
         )
 
     try:
         flow = get_google_flow()
-
         flow.code_verifier = code_verifier
-
         flow.fetch_token(code=code)
 
         credentials = flow.credentials
-
-        token_file = Path(__file__).resolve().parents[1] / "token.json"
-
-        token_file.write_text(
-            credentials.to_json()
-        )
+        TOKEN_FILE.write_text(credentials.to_json())
 
         request.session.pop("oauth_state", None)
         request.session.pop("code_verifier", None)
@@ -203,7 +248,7 @@ def classify_latest_email():
 
         if result is None:
             return {
-                "message": "No unread emails found."
+                "message": "No unread emails found.",
             }
 
         return result
@@ -228,9 +273,64 @@ def process_latest_email():
         return process_latest_unread_email()
 
     except Exception:
-        logger.exception("Email automation failed.")
+        logger.exception("Email draft automation failed.")
 
         raise HTTPException(
             status_code=502,
-            detail="Email automation failed.",
+            detail="Email draft automation failed.",
+        )
+
+
+@app.post("/gmail/send-draft")
+def gmail_send_draft(payload: SendDraftRequest):
+    """
+    Send an existing Gmail draft after human approval.
+    """
+
+    try:
+        draft_id = payload.draft_id.strip()
+
+        if not draft_id:
+            raise HTTPException(
+                status_code=400,
+                detail="draft_id cannot be empty.",
+            )
+
+        sent_message = send_gmail_draft(draft_id)
+
+        return {
+            "status": "sent",
+            "draft_id": draft_id,
+            "message_id": sent_message.get("id"),
+            "thread_id": sent_message.get("threadId"),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        logger.exception("Unable to send Gmail draft.")
+
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to send Gmail draft.",
+        )
+
+
+@app.post("/ai/process-latest-and-send")
+def process_latest_and_send():
+    """
+    Classify the latest unread email and directly send
+    an AI-generated reply if it is a sales lead.
+    """
+
+    try:
+        return process_latest_unread_email_and_send()
+
+    except Exception:
+        logger.exception("Direct email automation failed.")
+
+        raise HTTPException(
+            status_code=502,
+            detail="Direct email automation failed.",
         )

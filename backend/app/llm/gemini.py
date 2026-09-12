@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 
 from dotenv import load_dotenv
@@ -7,8 +8,11 @@ from google.genai import types
 from .schemas import GeneratedReply, LeadClassification
 
 
-load_dotenv()
+# Load the project's root .env file explicitly
+BASE_DIR = Path(__file__).resolve().parents[3]
+ENV_FILE = BASE_DIR / ".env"
 
+load_dotenv(ENV_FILE, override=True)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -17,7 +21,6 @@ if not GEMINI_API_KEY:
         "GEMINI_API_KEY is not configured. "
         "Please add it to the .env file."
     )
-
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 

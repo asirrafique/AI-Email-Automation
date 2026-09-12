@@ -12,7 +12,7 @@ credentials.json
 token.json
 
 # Local runtime data
-processed_emails.db
+*.db
 
 # Test and tool caches
 .pytest_cache/
