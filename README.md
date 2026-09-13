@@ -67,33 +67,48 @@ Store Processed Message ID
 ```text
 AI Email Automation/
 │
-├── backend/
-│   ├── app/
-│   │   ├── gmail/
-│   │   │   ├── auth.py
-│   │   │   └── service.py
-│   │   │
-│   │   ├── llm/
-│   │   │   ├── gemini.py
-│   │   │   └── schemas.py
-│   │   │
-│   │   ├── services/
-│   │   │   ├── email_classifier.py
-│   │   │   ├── email_worker.py
-│   │   │   └── processed_store.py
-│   │   │
-│   │   └── main.py
-│   │
-│   ├── tests/
-│   ├── manual_gemini_test.py
-│   ├── manual_reply_test.py
-│   ├── manual_prompt_injection_test.py
-│   ├── requirements.txt
-│   └── .env.example
-│
-├── pytest.ini
+├── .env                  
+├── .env.example           
 ├── .gitignore
-└── README.md
+├── pytest.ini
+├── README.md
+│
+├── .venv/                  # Python virtual environment
+│   └── ...
+│
+└── backend/
+    │
+    ├── app/
+    │   │
+    │   ├── main.py         # FastAPI application entry point
+    │   │
+    │   ├── gmail/
+    │   │   ├── auth.py     # Google OAuth authentication
+    │   │   └── service.py  # Gmail API operations
+    │   │
+    │   ├── llm/
+    │   │   ├── gemini.py   # Gemini API integration
+    │   │   └── schemas.py  # Pydantic data schemas
+    │   │
+    │   └── services/
+    │       ├── email_classifier.py  # Email classification
+    │       ├── email_worker.py      # Email processing workflow
+    │       └── processed_store.py   # SQLite duplicate tracking
+    │
+    ├── tests/
+    │   ├── test_email_classifier.py
+    │   ├── test_processed_store.py
+    │   └── test_schemas.py
+    │
+    ├── manual_gemini_test.py
+    ├── manual_reply_test.py
+    ├── manual_prompt_injection_test.py
+    │
+    ├── requirements.txt     # Python dependencies
+    │
+    ├── credentials.json     # Google OAuth credentials
+    ├── token.json           # Generated Google authentication token
+    └── processed_emails.db  # Local SQLite database
 ```
 
 ## Main Workflow
