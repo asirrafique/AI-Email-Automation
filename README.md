@@ -1,4 +1,4 @@
-# AI Email Automation 📨📩✉️
+# AI Email Automation📩
 
 An AI-powered Gmail automation backend built with **FastAPI**, **Google Gmail API**, and **Google Gemini**.
 
